@@ -19,7 +19,7 @@ type mockPriceService struct {
 	callDelay   time.Duration          // how long to sleep on each call so that we can simulate calls to be expensive
 }
 
-func (m *mockPriceService) GetPriceFor(itemCode string) (*Price, error) {
+func (m *mockPriceService) GetPriceFor(itemCode string) *PriceModel {
 	m.numCalls++            // increase the number of calls
 	time.Sleep(m.callDelay) // sleep to simulate expensive call
 
@@ -27,7 +27,13 @@ func (m *mockPriceService) GetPriceFor(itemCode string) (*Price, error) {
 	if !ok {
 		panic(fmt.Errorf("bug in the tests, we didn't have a mock result for [%v]", itemCode))
 	}
-	return &result.price, result.err
+
+	priceModel := &PriceModel{
+		Price: &result.price,
+		Error: result.err,
+	}
+
+	return priceModel
 }
 
 func (m *mockPriceService) getNumCalls() int {
@@ -35,11 +41,11 @@ func (m *mockPriceService) getNumCalls() int {
 }
 
 func getPriceWithNoErr(t *testing.T, cache *TransparentCache, itemCode string) float64 {
-	price, err := cache.GetPriceFor(itemCode)
-	if err != nil {
+	price := cache.GetPriceFor(itemCode)
+	if price.Error != nil {
 		t.Error("error getting price for", itemCode)
 	}
-	return price.amount
+	return price.Price.amount
 }
 
 func getPricesWithNoErr(t *testing.T, cache *TransparentCache, itemCodes ...string) []float64 {
@@ -47,7 +53,11 @@ func getPricesWithNoErr(t *testing.T, cache *TransparentCache, itemCodes ...stri
 	if err != nil {
 		t.Error("error getting prices for", itemCodes)
 	}
-	return prices
+	var result []float64
+	for _, price := range prices {
+		result = append(result, price.amount)
+	}
+	return result
 }
 
 func assertInt(t *testing.T, expected int, actual int, msg string) {
@@ -105,8 +115,8 @@ func TestGetPriceFor_ReturnsErrorOnServiceError(t *testing.T) {
 		},
 	}
 	cache := NewTransparentCache(mockService, time.Minute)
-	_, err := cache.GetPriceFor("p1")
-	if err == nil {
+	priceModel := cache.GetPriceFor("p1")
+	if priceModel.Error == nil {
 		t.Errorf("expected error, got nil")
 	}
 }
