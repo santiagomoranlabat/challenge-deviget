@@ -48,6 +48,7 @@ func (c *TransparentCache) GetPriceFor(itemCode string) (*Price, error) {
 		}, fmt.Errorf("getting amount from service : %v", err.Error())
 	}
 	c.Prices[itemCode] = price
+	c.Prices[itemCode].updatedAt = time.Now()
 	return price, nil
 }
 
