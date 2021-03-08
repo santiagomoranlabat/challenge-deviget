@@ -14,7 +14,7 @@ type PriceService interface {
 
 // TransparentCache is a cache that wraps the actual service
 // The cache will remember prices we ask for, so that we don't have to wait on every call
-// Cache should only return a amount if it is not older than "maxAge", so that we don't get stale prices
+// Cache should only return a price if it is not older than "maxAge", so that we don't get stale prices
 type TransparentCache struct {
 	actualPriceService PriceService
 	maxAge             time.Duration
@@ -39,7 +39,7 @@ func NewTransparentCache(actualPriceService PriceService, maxAge time.Duration) 
 	}
 }
 
-// GetPriceFor gets the amount for the item, either from the cache or the actual service if it was not cached or too old
+// GetPriceFor gets the price for the item, either from the cache or the actual service if it was not cached or too old
 func (c *TransparentCache) GetPriceFor(itemCode string) *PriceModel {
 	price, ok := c.Prices[itemCode]
 	if ok && c.isLessMaxAge(itemCode) {
@@ -53,7 +53,7 @@ func (c *TransparentCache) GetPriceFor(itemCode string) *PriceModel {
 			Price: &Price{
 				amount: 0, updatedAt: time.Time{},
 			},
-			Error: fmt.Errorf("getting amount from service : %v", price.Error.Error()),
+			Error: fmt.Errorf("getting price from service : %v", price.Error.Error()),
 		}
 	}
 	c.Prices[itemCode] = price
@@ -61,7 +61,7 @@ func (c *TransparentCache) GetPriceFor(itemCode string) *PriceModel {
 	return price
 }
 
-// isLessMaxAge checks that the amount was retrieved less than "maxAge" ago
+// isLessMaxAge checks that the price was retrieved less than "maxAge" ago
 func (c *TransparentCache) isLessMaxAge(itemCode string) bool {
 	var isLessMaxAge bool
 	now := time.Now()
