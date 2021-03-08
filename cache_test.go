@@ -15,11 +15,11 @@ type mockResult struct {
 
 type mockPriceService struct {
 	numCalls    int
-	mockResults map[string]*mockResult // what price and err to return for a particular itemCode
+	mockResults map[string]*mockResult // what amount and err to return for a particular itemCode
 	callDelay   time.Duration          // how long to sleep on each call so that we can simulate calls to be expensive
 }
 
-func (m *mockPriceService) GetPriceFor(itemCode string) (*Price, error) {
+func (m *mockPriceService) GetPriceFor(itemCode string) *PriceModel {
 	m.numCalls++            // increase the number of calls
 	time.Sleep(m.callDelay) // sleep to simulate expensive call
 
@@ -27,7 +27,13 @@ func (m *mockPriceService) GetPriceFor(itemCode string) (*Price, error) {
 	if !ok {
 		panic(fmt.Errorf("bug in the tests, we didn't have a mock result for [%v]", itemCode))
 	}
-	return &result.price, result.err
+
+	priceModel := &PriceModel{
+		Price: &result.price,
+		Error: result.err,
+	}
+
+	return priceModel
 }
 
 func (m *mockPriceService) getNumCalls() int {
@@ -35,11 +41,11 @@ func (m *mockPriceService) getNumCalls() int {
 }
 
 func getPriceWithNoErr(t *testing.T, cache *TransparentCache, itemCode string) float64 {
-	price, err := cache.GetPriceFor(itemCode)
-	if err != nil {
-		t.Error("error getting price for", itemCode)
+	price := cache.GetPriceFor(itemCode)
+	if price.Error != nil {
+		t.Error("error getting amount for", itemCode)
 	}
-	return price.amount
+	return price.Price.amount
 }
 
 func getPricesWithNoErr(t *testing.T, cache *TransparentCache, itemCodes ...string) []float64 {
@@ -47,7 +53,11 @@ func getPricesWithNoErr(t *testing.T, cache *TransparentCache, itemCodes ...stri
 	if err != nil {
 		t.Error("error getting prices for", itemCodes)
 	}
-	return prices
+	var result []float64
+	for _, price := range prices {
+		result = append(result, price.amount)
+	}
+	return result
 }
 
 func assertInt(t *testing.T, expected int, actual int, msg string) {
@@ -105,13 +115,13 @@ func TestGetPriceFor_ReturnsErrorOnServiceError(t *testing.T) {
 		},
 	}
 	cache := NewTransparentCache(mockService, time.Minute)
-	_, err := cache.GetPriceFor("p1")
-	if err == nil {
+	priceModel := cache.GetPriceFor("p1")
+	if priceModel.Error == nil {
 		t.Errorf("expected error, got nil")
 	}
 }
 
-// Check that cache can return more than one price at once, caching appropriately
+// Check that cache can return more than one amount at once, caching appropriately
 func TestGetPricesFor_GetsSeveralPricesAtOnceAndCachesThem(t *testing.T) {
 	mockService := &mockPriceService{
 		mockResults: map[string]*mockResult{
@@ -149,13 +159,13 @@ func TestGetPriceFor_DoesNotReturnOldResults(t *testing.T) {
 	maxAge := time.Millisecond * 200
 	maxAge70Pct := time.Millisecond * 140
 	cache := NewTransparentCache(mockService, maxAge)
-	// get price for "p1" twice (one external service call, mocked to spend 1 second)
+	// get amount for "p1" twice (one external service call, mocked to spend 1 second)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertInt(t, 1, mockService.getNumCalls(), "wrong number of service calls.")
 	// sleep 70% the maxAge
 	time.Sleep(maxAge70Pct)
-	// get price for "p1" and "p2", only "p2" should be retrieved from the external service (one more external call, mocked to spend 1 second)
+	// get amount for "p1" and "p2", only "p2" should be retrieved from the external service (one more external call, mocked to spend 1 second)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 7, getPriceWithNoErr(t, cache, "p2"), "wrong price returned")
@@ -163,7 +173,7 @@ func TestGetPriceFor_DoesNotReturnOldResults(t *testing.T) {
 	assertInt(t, 2, mockService.getNumCalls(), "wrong number of service calls.")
 	// sleep 70% the maxAge. 140% in total for p1, and 70% for p2.
 	time.Sleep(maxAge70Pct)
-	// get price for "p1" and "p2", only "p1" should be retrieved from the cache ("p2" is still valid)
+	// get amount for "p1" and "p2", only "p1" should be retrieved from the cache ("p2" is still valid)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 7, getPriceWithNoErr(t, cache, "p2"), "wrong price returned")
