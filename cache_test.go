@@ -9,18 +9,17 @@ import (
 
 // mockResult has the float64 and err to return
 type mockResult struct {
-	price float64
+	price Price
 	err   error
 }
 
 type mockPriceService struct {
 	numCalls    int
-	mockResults map[string]mockResult // what price and err to return for a particular itemCode
-	callDelay   time.Duration         // how long to sleep on each call so that we can simulate calls to be expensive
+	mockResults map[string]*mockResult // what price and err to return for a particular itemCode
+	callDelay   time.Duration          // how long to sleep on each call so that we can simulate calls to be expensive
 }
 
-func (m *mockPriceService) GetPriceFor(itemCode string) (float64, error) {
-
+func (m *mockPriceService) GetPriceFor(itemCode string) *PriceModel {
 	m.numCalls++            // increase the number of calls
 	time.Sleep(m.callDelay) // sleep to simulate expensive call
 
@@ -28,7 +27,13 @@ func (m *mockPriceService) GetPriceFor(itemCode string) (float64, error) {
 	if !ok {
 		panic(fmt.Errorf("bug in the tests, we didn't have a mock result for [%v]", itemCode))
 	}
-	return result.price, result.err
+
+	priceModel := &PriceModel{
+		Price: &result.price,
+		Error: result.err,
+	}
+
+	return priceModel
 }
 
 func (m *mockPriceService) getNumCalls() int {
@@ -36,11 +41,11 @@ func (m *mockPriceService) getNumCalls() int {
 }
 
 func getPriceWithNoErr(t *testing.T, cache *TransparentCache, itemCode string) float64 {
-	price, err := cache.GetPriceFor(itemCode)
-	if err != nil {
+	price := cache.GetPriceFor(itemCode)
+	if price.Error != nil {
 		t.Error("error getting price for", itemCode)
 	}
-	return price
+	return price.Price.amount
 }
 
 func getPricesWithNoErr(t *testing.T, cache *TransparentCache, itemCodes ...string) []float64 {
@@ -48,7 +53,11 @@ func getPricesWithNoErr(t *testing.T, cache *TransparentCache, itemCodes ...stri
 	if err != nil {
 		t.Error("error getting prices for", itemCodes)
 	}
-	return prices
+	var result []float64
+	for _, price := range prices {
+		result = append(result, price.amount)
+	}
+	return result
 }
 
 func assertInt(t *testing.T, expected int, actual int, msg string) {
@@ -81,27 +90,33 @@ func assertFloats(t *testing.T, expected []float64, actual []float64, msg string
 // Check that we are caching results (we should not call the external service for all calls)
 func TestGetPriceFor_CachesResults(t *testing.T) {
 	mockService := &mockPriceService{
-		mockResults: map[string]mockResult{
-			"p1": {price: 5, err: nil},
+		mockResults: map[string]*mockResult{
+			"p1": {price: Price{
+				amount:    5,
+				updatedAt: time.Now(),
+			}, err: nil},
 		},
 	}
 	cache := NewTransparentCache(mockService, time.Minute)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
-	assertInt(t, 1, mockService.getNumCalls(), "wrong number of service calls")
+	assertInt(t, 1, mockService.getNumCalls(), "wrong number of service calls.")
 }
 
 // Check that cache returns an error if external service returns an error
 func TestGetPriceFor_ReturnsErrorOnServiceError(t *testing.T) {
 	mockService := &mockPriceService{
-		mockResults: map[string]mockResult{
-			"p1": {price: 0, err: fmt.Errorf("some error")},
+		mockResults: map[string]*mockResult{
+			"p1": {price: Price{
+				amount:    5,
+				updatedAt: time.Now(),
+			}, err: fmt.Errorf("some error")},
 		},
 	}
 	cache := NewTransparentCache(mockService, time.Minute)
-	_, err := cache.GetPriceFor("p1")
-	if err == nil {
+	priceModel := cache.GetPriceFor("p1")
+	if priceModel.Error == nil {
 		t.Errorf("expected error, got nil")
 	}
 }
@@ -109,57 +124,75 @@ func TestGetPriceFor_ReturnsErrorOnServiceError(t *testing.T) {
 // Check that cache can return more than one price at once, caching appropriately
 func TestGetPricesFor_GetsSeveralPricesAtOnceAndCachesThem(t *testing.T) {
 	mockService := &mockPriceService{
-		mockResults: map[string]mockResult{
-			"p1": {price: 5, err: nil},
-			"p2": {price: 7, err: nil},
+		mockResults: map[string]*mockResult{
+			"p1": {price: Price{
+				amount:    5,
+				updatedAt: time.Now(),
+			}, err: nil},
+			"p2": {price: Price{
+				amount:    7,
+				updatedAt: time.Now(),
+			}, err: nil},
 		},
 	}
 	cache := NewTransparentCache(mockService, time.Minute)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloats(t, []float64{5, 7}, getPricesWithNoErr(t, cache, "p1", "p2"), "wrong price returned")
 	assertFloats(t, []float64{5, 7}, getPricesWithNoErr(t, cache, "p1", "p2"), "wrong price returned")
-	assertInt(t, 2, mockService.getNumCalls(), "wrong number of service calls")
+	assertInt(t, 2, mockService.getNumCalls(), "wrong number of service calls.")
 }
 
 // Check that we are expiring results when they exceed the max age
 func TestGetPriceFor_DoesNotReturnOldResults(t *testing.T) {
 	mockService := &mockPriceService{
-		mockResults: map[string]mockResult{
-			"p1": {price: 5, err: nil},
-			"p2": {price: 7, err: nil},
+		mockResults: map[string]*mockResult{
+			"p1": {price: Price{
+				amount:    5,
+				updatedAt: time.Now(),
+			}, err: nil},
+			"p2": {price: Price{
+				amount:    7,
+				updatedAt: time.Now(),
+			}, err: nil},
 		},
 	}
 	maxAge := time.Millisecond * 200
 	maxAge70Pct := time.Millisecond * 140
 	cache := NewTransparentCache(mockService, maxAge)
-	// get price for "p1" twice (one external service call)
+	// get price for "p1" twice (one external service call, mocked to spend 1 second)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
-	assertInt(t, 1, mockService.getNumCalls(), "wrong number of service calls")
-	// sleep 0.7 the maxAge
+	assertInt(t, 1, mockService.getNumCalls(), "wrong number of service calls.")
+	// sleep 70% the maxAge
 	time.Sleep(maxAge70Pct)
-	// get price for "p1" and "p2", only "p2" should be retrieved from the external service (one more external call)
+	// get price for "p1" and "p2", only "p2" should be retrieved from the external service (one more external call, mocked to spend 1 second)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 7, getPriceWithNoErr(t, cache, "p2"), "wrong price returned")
 	assertFloat(t, 7, getPriceWithNoErr(t, cache, "p2"), "wrong price returned")
-	assertInt(t, 2, mockService.getNumCalls(), "wrong number of service calls")
-	// sleep 0.7 the maxAge
+	assertInt(t, 2, mockService.getNumCalls(), "wrong number of service calls.")
+	// sleep 70% the maxAge. 140% in total for p1, and 70% for p2.
 	time.Sleep(maxAge70Pct)
 	// get price for "p1" and "p2", only "p1" should be retrieved from the cache ("p2" is still valid)
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 5, getPriceWithNoErr(t, cache, "p1"), "wrong price returned")
 	assertFloat(t, 7, getPriceWithNoErr(t, cache, "p2"), "wrong price returned")
-	assertInt(t, 3, mockService.getNumCalls(), "wrong number of service calls")
+	assertInt(t, 3, mockService.getNumCalls(), "wrong number of service calls.")
 }
 
 // Check that cache parallelize service calls when getting several values at once
 func TestGetPricesFor_ParallelizeCalls(t *testing.T) {
 	mockService := &mockPriceService{
 		callDelay: time.Second, // each call to external service takes one full second
-		mockResults: map[string]mockResult{
-			"p1": {price: 5, err: nil},
-			"p2": {price: 7, err: nil},
+		mockResults: map[string]*mockResult{
+			"p1": {price: Price{
+				amount:    5,
+				updatedAt: time.Now(),
+			}, err: nil},
+			"p2": {price: Price{
+				amount:    7,
+				updatedAt: time.Now(),
+			}, err: nil},
 		},
 	}
 	cache := NewTransparentCache(mockService, time.Minute)
